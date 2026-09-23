@@ -47,6 +47,13 @@
 @media (min-width:768px){.ad-slot{min-height:318px}
   .ad-slot ins.adsbygoogle{width:336px;height:280px}}
 .ad-label{font-size:10px;letter-spacing:.14em;color:#a9a79e;margin-bottom:8px}
+
+/* 見た目の調整（2026-09-24・AIっぽさを消す）: 影・グラデーション・大きな角丸・英字の飾り見出しをやめる（測定から生成し、機能に関わる部品は手で除外）。元のルールは上に残し上書き。 */
+body { background: #fff; }
+p.eyebrow { display: none; }
+section.hero { background: rgb(255, 253, 247); }
+a.jump-button, div.hero-stats, div.roulette-layout, #spin { box-shadow: none; }
+button.chip { border-radius: 6px; }
 </style>
 </head>
 <body>
