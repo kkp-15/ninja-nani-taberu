@@ -113,6 +113,36 @@ legend{font-family:var(--k-bold);font-weight:400;letter-spacing:.04em}
 .situation-grid article>p{color:var(--k-shu)}
 .situation-grid h3,.tips-grid h3{font-family:var(--k-bold);font-weight:400}
 summary{text-decoration:underline;text-decoration-color:var(--k-orange);text-decoration-thickness:2px;text-underline-offset:5px}
+/* ===== 2026-10-20 清潔感（kkp-kit 17eac63 の方針）: 大きなヒーロー・数字タイル・英字の番号ラベル・赤丸の KKP をやめ、上を詰めてすぐ回せるように =====
+   ルーレットの色分け（JS の COLORS）・動き・保存（localStorage のキー）・広告・GA4・JSON-LD・title は不変。見出しの文言も不変（大きさだけ）。 */
+.brand span{display:none}
+.hero,section.hero{min-height:0;display:block;padding:24px clamp(16px,5vw,72px) 8px;background:var(--k-surface);border-bottom:0}
+h1{font-size:clamp(24px,4.4vw,34px);line-height:1.35;letter-spacing:.02em;margin:0 0 8px;max-width:none}
+h1 em:after{content:none}
+.hero-lead{font-size:15px;margin:0;color:var(--k-text-2)}
+.jump-button,a.jump-button,.hero-stats,div.hero-stats{display:none}
+.section-number,.eyebrow{display:none}
+.roulette-section,.situations,.faq-section{padding:24px 16px 48px}
+.section-heading{margin-bottom:16px}
+.section-heading h2{font-size:clamp(20px,2.6vw,26px);letter-spacing:.02em}
+.roulette-layout,div.roulette-layout{border-width:var(--k-bw-s);box-shadow:none}
+.filters-card{padding:20px}
+/* 条件の選択: 丸いピルの並び → 墨の線でつないだ四角（k-seg の形・選択中＝朱） */
+.chip-list{gap:0;overflow:hidden;border:var(--k-bw-s) solid var(--k-sumi);border-radius:var(--k-r);background:var(--k-surface)}
+.chip,button.chip{flex:1 1 auto;min-height:44px;margin:0 calc(var(--k-bw-s)*-1) calc(var(--k-bw-s)*-1) 0;padding:6px 12px;border:0;border-right:var(--k-bw-s) solid var(--k-sumi);border-bottom:var(--k-bw-s) solid var(--k-sumi);border-radius:0;background:none;font-size:14px}
+.chip:hover{background:#fff;border-color:var(--k-sumi)}
+.chip.active,.chip.active:hover{background:var(--k-shu);color:#fff;border-color:var(--k-sumi)}
+.result-card.visible{border-left-width:var(--k-bw);box-shadow:none}
+/* 近道: 濃い地の大きな番号 → 罫線と小さな墨の番号 */
+.tips-section{padding:40px max(16px,calc((100vw - 1132px)/2));background:var(--k-surface);color:var(--k-sumi);border-top:1px solid var(--k-line-soft)}
+.tips-grid{gap:0 24px;background:none;border:0}
+.tips-grid article{padding:14px 0;background:none;border-top:1px solid var(--k-line-soft)}
+.tips-grid article>span{font-size:16px;color:var(--k-sumi)}
+.tips-grid p{color:var(--k-text-2)}
+.situation-grid{gap:0 24px}
+.situation-grid article{padding:14px 0;background:none;border:0;border-top:1px solid var(--k-line-soft);border-radius:0;box-shadow:none}
+.situation-grid article>p{color:var(--k-text-2)}
+footer .brand span{display:none}
 </style>
 <!-- kkp-rel-d4:start -->
 <style id="kkp-rel-d4">
