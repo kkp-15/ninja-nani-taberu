@@ -6,6 +6,9 @@
    - 部品の手伝い（2026-10-20〜）: KKit.toast / KKit.countdown / KKit.reveal / KKit.share / KKit.install。
      .k-install[data-k-key] と [data-k-share] は書いておくだけで自動でつながる
    - 演出の部品: KKit.fx.slash（札を刀で斬る）・KKit.fx.shuriken（手裏剣が飛んできて刺さる）。下の fxParts を見る
+   - 配信の土台（2026-10-21〜）: KKit.stream / KKit.live / KKit.openView / KKit.view / KKit.resume / KKit.twice / KKit.fitText / KKit.streamTitle。下の streamParts を見る。
+     読み込み時に使うページは kit.js を defer なしで <head> に置く（本体の script より先に KKit が要るため）
+   - 遊びの部品（2026-10-22〜）: KKit.die（サイコロ）・KKit.wheel（ルーレット盤）・KKit.gateArt（ゲートの絵・canvas 用）。下の gameParts を見る
    動きを減らす設定（prefers-reduced-motion）では、季節と部品の手伝い以外は何もしない（演出の部品は動かさずに、すぐ結果の合図だけ出す）。 */
 (function () {
   var root = document.documentElement;
@@ -17,6 +20,8 @@
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   fxParts();
   helpers();
+  streamParts();
+  gameParts();
   if (reduce) return;
 
   function start() {
@@ -161,6 +166,269 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', auto); else auto();
   }
 
+  /* ===== 配信の土台（2026-10-21〜） =====
+     KKit.stream.init({ key })      配信モードかどうか（PC幅768以上・?mode=stream で入る・?mode=normal で出る）。<html data-k-stream> を付ける
+     KKit.stream.set(on, params)    切り替え。URL の #… と mode= を消してから読み直す（#付きだと読み直さない不具合の再発防止）
+     KKit.stream.on / can() / noAds()  いま配信中か／PC幅か（?kkptest=1 ならスマホでも可）／広告を読まないか
+     KKit.live({ ch, role, onState, onHello })  BroadcastChannel＋localStorage の同期。op は send(state)・hold(true/false)・connected()
+                                    .k-live[data-k-live="ch"] の札を自動で「つながっています／つながっていません」に
+     KKit.openView({ url, ch, name })  表示ページを別窓 1280x720 で開く（開けたら true）。操作画面は動かさない
+     .k-view-open[data-k-view][data-k-ch]  開く・URLをコピー・背景3択・OBS の1行を作る。開いたら 'k-view-open' の event
+     KKit.view({ ch })              /view/ 側: 背景（?bg= ＞ 操作画面の選択 ＞ cream）を <html data-k-bg> に。idle(true/false) で待ち画面
+     KKit.resume({ key, box, label, onResume, onDiscard, live, ttl })  続きから（既定12時間・この端末だけ）。選ぶまで live を止める
+     KKit.twice(要素, { text, ms, when, ok })  回が消える操作の2回押し。when() が false なら1回で ok
+     KKit.fitText(要素, { min, max, lines })   字を縮めて lines 行（既定1）に収める。min（px）より小さくしない
+     KKit.streamTitle(要素, { key, onChange })  「〇〇の」タイトル欄（12字・空なら「みんな」・端末に覚える） */
+  function streamParts() {
+    var K = window.KKit = window.KKit || {};
+    var ls = {
+      get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+      set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+      del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
+    };
+    function $el(x) { return typeof x === 'string' ? document.querySelector(x) : x; }
+    function ready(f) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', f); else f(); }
+    function call(f, a, b) { if (typeof f === 'function') try { return f(a, b); } catch (e) { setTimeout(function () { throw e; }); } }
+
+    /* --- 配信モード --- */
+    var ST = K.stream = {
+      key: 'k-stream', on: false,
+      can: function () { return !!window.__kkpTest || !!(window.matchMedia && matchMedia('(min-width:768px)').matches); },
+      noAds: function () { return ST.on || !!window.__kkpTest; },
+      init: function (o) {
+        o = o || {}; if (o.key) ST.key = o.key;
+        var q = location.search;
+        if (/[?&]mode=normal\b/.test(q)) ls.del(ST.key);
+        else if (/[?&]mode=stream\b/.test(q) && ST.can()) ls.set(ST.key, '1');
+        ST.on = ST.can() && ls.get(ST.key) === '1';
+        if (ST.on) {
+          root.setAttribute('data-k-stream', '');
+          try { history.scrollRestoration = 'manual'; } catch (e) {}
+          ready(function () { window.scrollTo(0, 0); });
+        } else root.removeAttribute('data-k-stream');
+        return ST.on;
+      },
+      set: function (on, params) {
+        on = !!on && ST.can();
+        if (on) ls.set(ST.key, '1'); else ls.del(ST.key);
+        var u;
+        try { u = new URL(location.href); } catch (e) { location.reload(); return; }
+        u.hash = ''; u.searchParams.delete('mode');
+        if (params) Object.keys(params).forEach(function (k) { if (params[k] == null) u.searchParams.delete(k); else u.searchParams.set(k, params[k]); });
+        try { history.replaceState(null, '', u.pathname + u.search); } catch (e) {}
+        location.reload();
+      }
+    };
+
+    /* --- 同期（操作画面 ⇄ 表示ページ。同じブラウザの中だけ） --- */
+    var lives = {};
+    K.live = function (o) {
+      o = o || {};
+      var ch = o.ch || 'k-live', key = 'k-live:' + ch, hkey = 'k-live-hello:' + ch, TTL = o.ttl || 12 * 3600 * 1000;
+      var bc = null; try { bc = new BroadcastChannel(ch); } catch (e) {}
+      function post(m) { try { if (bc) bc.postMessage(m); } catch (e) {} }
+      var api = { ch: ch };
+      if (o.role === 'view') {
+        var lastT = 0;
+        var take = function (d) { if (!d || d.s === undefined || (d.t && d.t < lastT)) return; lastT = d.t || Date.now(); call(o.onState, d.s, d); };
+        if (bc) bc.addEventListener('message', function (e) { var m = e.data || {}; if (m.k === 's') take(m.d); });
+        window.addEventListener('storage', function (e) { if (e.key === key && e.newValue) { try { take(JSON.parse(e.newValue)); } catch (x) {} } });
+        var hello = function () { post({ k: 'hello', t: Date.now() }); ls.set(hkey, String(Date.now())); };
+        api.start = function () {
+          try { var d = JSON.parse(ls.get(key) || 'null'); if (d && d.t && Date.now() - d.t < TTL) take(d); else call(o.onState, null); } catch (e) { call(o.onState, null); }
+          hello(); setInterval(hello, 3000);
+          return api;
+        };
+        return api;
+      }
+      // op（操作画面）
+      var last = 0, held = false, cur = null, pend = null, firstSent = 0;
+      function paint() {
+        var on = Date.now() - last < 7000;
+        [].forEach.call(document.querySelectorAll('.k-live[data-k-live="' + ch + '"]'), function (b) {
+          b.classList.toggle('k-on', on);
+          b.textContent = '表示ページ：' + (on ? 'つながっています' : 'つながっていません');
+        });
+      }
+      function heard() { var first = Date.now() - last > 7000; last = Date.now(); paint(); if (first) { call(o.onHello); if (cur && !held) post({ k: 's', d: cur }); } }
+      if (bc) bc.addEventListener('message', function (e) { var m = e.data || {}; if (m.k === 'hello') heard(); });
+      window.addEventListener('storage', function (e) { if (e.key === hkey) heard(); });
+      setInterval(paint, 1000); ready(paint);
+      api.send = function (state) {
+        if (held) { pend = { s: state }; return; }
+        cur = { t: Date.now(), s: state }; pend = null;
+        ls.set(key, JSON.stringify(cur)); post({ k: 's', d: cur });
+      };
+      api.hold = function (b) { held = !!b; if (!held && pend) api.send(pend.s); };
+      api.held = function () { return held; };
+      api.connected = function () { return Date.now() - last < 7000; };
+      api.paint = paint;
+      lives[ch] = api;
+      return api;
+    };
+
+    /* --- 表示ページを開く --- */
+    var BG = ['cream', 'green', 'clear'];
+    function bgOf(ch) { var b = ls.get('k-view-bg:' + ch); return BG.indexOf(b) >= 0 ? b : 'cream'; }
+    function viewUrl(o) { var b = bgOf(o.ch || ''); return (o.url || '/view/') + (b === 'cream' ? '' : ((o.url || '').indexOf('?') >= 0 ? '&' : '?') + 'bg=' + b); }
+    K.openView = function (o) {
+      o = o || {};
+      var w = null; try { w = window.open(viewUrl(o), o.name || 'kView', 'popup=yes,width=1280,height=720'); } catch (e) {}
+      if (w && o.ch && lives[o.ch]) setTimeout(function () { lives[o.ch].paint(); }, 600);
+      return !!w;
+    };
+    var HOW = {
+      cream: 'OBS の「ウィンドウキャプチャ」でこの窓を取り込む',
+      green: 'ウィンドウキャプチャで取り込み、フィルタの「クロマキー」で緑を消す',
+      clear: '背景なし（ウィンドウキャプチャでは白く映ります）'
+    };
+    K.viewOpen = function (el, o) {
+      el = $el(el); if (!el || el._kvo) return; el._kvo = true; o = o || {};
+      var url = o.url || el.getAttribute('data-k-view') || '/view/', ch = o.ch || el.getAttribute('data-k-ch') || '', name = o.name || el.getAttribute('data-k-name') || 'kView';
+      el.innerHTML = '<button type="button" class="k-btn k-btn-sub k-vo-go">表示ページを別ウィンドウで開く</button>'
+        + '<button type="button" class="k-btn k-btn-sub k-vo-copy">URLをコピー</button>'
+        + '<div class="k-seg k-vo-bg" role="group" aria-label="表示ページの背景"><button type="button" data-bg="cream">クリーム</button><button type="button" data-bg="green">緑</button><button type="button" data-bg="clear">透過</button></div>'
+        + '<p class="k-vo-how"></p><p class="k-vo-msg" role="status" hidden>ポップアップを許可して、もう一度押してください</p>';
+      var how = el.querySelector('.k-vo-how'), msg = el.querySelector('.k-vo-msg');
+      function paint() { var b = bgOf(ch); [].forEach.call(el.querySelectorAll('[data-bg]'), function (x) { x.setAttribute('aria-pressed', String(x.getAttribute('data-bg') === b)); }); how.textContent = HOW[b]; }
+      el.querySelector('.k-vo-go').addEventListener('click', function () {
+        var ok = K.openView({ url: url, ch: ch, name: name });
+        msg.hidden = ok;
+        el.dispatchEvent(new CustomEvent('k-view-open', { bubbles: true, detail: { ok: ok } }));
+      });
+      el.querySelector('.k-vo-copy').addEventListener('click', function () {
+        var u = location.origin + viewUrl({ url: url, ch: ch });
+        var done = function () { if (K.toast) K.toast('表示ページのURLをコピーしました'); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(u).then(done, function () { if (K.toast) K.toast(u, 6000); });
+        else if (K.toast) K.toast(u, 6000);
+      });
+      el.querySelector('.k-vo-bg').addEventListener('click', function (e) {
+        var b = e.target.closest('[data-bg]'); if (!b) return;
+        ls.set('k-view-bg:' + ch, b.getAttribute('data-bg')); paint();
+      });
+      paint();
+      return { paint: paint };
+    };
+
+    /* --- 表示ページ側の枠 --- */
+    K.view = function (o) {
+      o = o || {};
+      var ch = o.ch || '', m = /[?&]bg=(cream|green|clear)\b/.exec(location.search), fixed = m ? m[1] : '';
+      function apply() { root.setAttribute('data-k-bg', fixed || bgOf(ch)); }
+      apply();
+      if (!fixed) window.addEventListener('storage', function (e) { if (e.key === 'k-view-bg:' + ch) apply(); });
+      var stage = null, idleT = null;
+      window.addEventListener('resize', function () { clearTimeout(idleT); idleT = setTimeout(function () { var t = stage && !stage.querySelector('.k-view-idle').hidden && stage.querySelector('.k-view-idle b,.k-view-idle-t'); if (t) K.fitText(t, { min: 42 }); }, 150); });
+      return {
+        bg: function () { return root.getAttribute('data-k-bg'); },
+        idle: function (on, title) {
+          stage = stage || document.querySelector(o.stage || '.k-view-stage');
+          if (!stage) return;
+          stage.classList.toggle('k-idle', !!on);
+          var box = stage.querySelector('.k-view-idle');
+          if (box) {
+            box.hidden = !on;
+            if (on && title != null) { var t = box.querySelector('b,.k-view-idle-t'); if (t && t.textContent !== title) { t.textContent = title; K.fitText(t, { min: 42 }); } }
+          }
+        }
+      };
+    };
+
+    /* --- 続きから --- */
+    K.resume = function (o) {
+      o = o || {};
+      var key = o.key || 'k-resume', TTL = o.ttl || 12 * 3600 * 1000, live = o.live || null, api = { pending: false };
+      api.save = function (data) { ls.set(key, JSON.stringify({ at: Date.now(), data: data })); };
+      api.clear = function () { ls.del(key); };
+      var run = null; try { run = JSON.parse(ls.get(key) || 'null'); } catch (e) {}
+      if (!run || !run.data || !run.at || Date.now() - run.at > TTL || (o.valid && !o.valid(run.data))) { if (run) ls.del(key); return api; }
+      var box = $el(o.box);
+      if (!box) return api;
+      var ago = Math.max(0, Math.round((Date.now() - run.at) / 60000));
+      var agoT = ago < 1 ? 'たった今' : ago < 60 ? ago + '分前' : Math.floor(ago / 60) + '時間前';
+      var lab = call(o.label, run.data);
+      box.classList.add('k-resume');
+      box.innerHTML = '<p></p><button type="button" class="k-btn k-btn-main k-btn-sm" data-k-go>続きから</button><button type="button" class="k-btn k-btn-sub k-btn-sm" data-k-del>消して新しく</button>';
+      box.querySelector('p').textContent = '前回の続きがあります（' + (lab ? lab + '・' : '') + agoT + '）';
+      box.hidden = false; api.pending = true;
+      if (live) live.hold(true);
+      function close() { box.hidden = true; api.pending = false; }
+      box.querySelector('[data-k-go]').addEventListener('click', function () { close(); call(o.onResume, run.data); if (live) live.hold(false); });
+      box.querySelector('[data-k-del]').addEventListener('click', function () { close(); ls.del(key); call(o.onDiscard); if (live) live.hold(false); });
+      return api;
+    };
+
+    /* --- 2回押し --- */
+    K.twice = function (el, o) {
+      el = $el(el); if (!el) return; o = o || {};
+      var armed = false, t = 0, saved = '';
+      function disarm() {
+        if (!armed) return; armed = false; clearTimeout(t);
+        if (el.textContent === o.text) el.innerHTML = saved;
+        el.classList.remove('k-twice-on');
+      }
+      el.addEventListener('click', function (e) {
+        if (el.disabled) return;
+        if (o.when && !o.when()) { disarm(); call(o.ok, e); return; }
+        if (!armed) {
+          armed = true; saved = el.innerHTML; el.textContent = o.text || 'もう一度押すと決定'; el.classList.add('k-twice-on');
+          t = setTimeout(disarm, o.ms || 3000); return;
+        }
+        disarm(); call(o.ok, e);
+      });
+      return { disarm: disarm, armed: function () { return armed; } };
+    };
+
+    /* --- 字を縮めて収める --- */
+    K.fitText = function (el, o) {
+      el = $el(el); if (!el) return 0; o = o || {};
+      var lines = o.lines || 1;
+      el.style.fontSize = '';
+      if (lines === 1) { el.style.whiteSpace = 'nowrap'; el.style.overflow = 'hidden'; el.style.textOverflow = 'ellipsis'; }
+      var max = o.max || parseFloat(getComputedStyle(el).fontSize) || 16, min = Math.min(o.min || 14, max);
+      function fits() {
+        if (el.scrollWidth > el.clientWidth) return false;
+        if (lines > 1) {
+          var cs = getComputedStyle(el), lh = parseFloat(cs.lineHeight);
+          if (isNaN(lh)) lh = parseFloat(cs.fontSize) * 1.3;
+          if (el.scrollHeight > lh * lines + parseFloat(cs.paddingTop || 0) + parseFloat(cs.paddingBottom || 0) + 2) return false;
+        }
+        return true;
+      }
+      el.style.fontSize = max + 'px';
+      if (!el.clientWidth || fits()) { el.style.fontSize = ''; return max; }
+      var lo = min, hi = max;
+      for (var i = 0; i < 12 && hi - lo > 0.5; i++) { var mid = (lo + hi) / 2; el.style.fontSize = mid + 'px'; if (fits()) lo = mid; else hi = mid; }
+      lo = Math.max(min, Math.floor(lo) - (lines === 1 ? 1 : 0));   // 端数で「…」が出ないよう少し小さめに
+      el.style.fontSize = lo + 'px';
+      return lo;
+    };
+
+    /* --- 「〇〇の」タイトル --- */
+    K.streamTitle = function (el, o) {
+      el = $el(el); if (!el) return null; o = o || {};
+      var key = o.key || el.getAttribute('data-k-key') || 'k-stream-title', inp = el.querySelector('input'), sp = el.querySelector('span');
+      var suffix = o.suffix != null ? o.suffix : (sp ? sp.textContent : '');
+      var max = o.max || 12;
+      if (inp) { inp.maxLength = max; if (!inp.placeholder) inp.placeholder = 'みんな'; inp.value = (ls.get(key) || '').slice(0, max); }
+      var api = {
+        value: function () { return String(ls.get(key) || '').trim().slice(0, max); },
+        text: function () { return (api.value() || 'みんな') + suffix; },
+        set: function (v) { v = String(v || '').slice(0, max); ls.set(key, v.trim()); if (inp && inp.value !== v) inp.value = v; }
+      };
+      if (inp) {
+        inp.addEventListener('input', function (e) { if (e.isComposing) return; ls.set(key, inp.value.trim().slice(0, max)); call(o.onChange, api.text()); });
+        inp.addEventListener('compositionend', function () { ls.set(key, inp.value.trim().slice(0, max)); call(o.onChange, api.text()); });
+        inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); inp.blur(); } });
+      }
+      return api;
+    };
+
+    ready(function () {
+      [].forEach.call(document.querySelectorAll('.k-view-open[data-k-view]'), function (el) { K.viewOpen(el); });
+    });
+  }
+
   /* ===== 演出の部品 =====
      どのサイトでも1行で呼べる形。絵は kit.css が img/ から読む（JS は絵の場所を知らない）。
      長さ: speed に 'short'（0.6倍）・'normal'・'long'（1.5倍）か倍率の数。音は鳴らさず opts.sound(種類) で呼び出し側に知らせる。
@@ -285,5 +553,185 @@
     }
 
     K.fx = { slash: slash, shuriken: shuriken, clear: clear, ms: ms, speed: k, reduce: !!reduce };
+  }
+
+  /* ===== 遊びの部品（2026-10-22 第3波）: サイコロ・ルーレット盤・ゲートの絵 =====
+     KKit.die(要素, 目, { roll, ms, onDone })  .k-die に目（1〜6）を SVG で描く。roll:true で1回だけ転がって止まる（動きを減らす設定では転がらない）
+     KKit.wheel(要素, { items, colors, minPx })  .k-wheel にルーレット盤（D4 の濃淡で区切る・中央に家紋・上に墨の針）。
+        戻り値 { set(items), spinTo(番号, { turns, ms, onDone }), at(角度), angle }。止まったあと左半分の字を180度回して逆さまにしない
+     KKit.gateArt(基準パス)  canvas のゲーム用。のれんと柱の絵を読み、tint(色) で色を染めたのれん（canvas）を返す */
+  function gameParts() {
+    var K = window.KKit = window.KKit || {};
+    var NS = 'http://www.w3.org/2000/svg';
+    function $el(x) { return typeof x === 'string' ? document.querySelector(x) : x; }
+    function svg(tag, at, parent) { var e = document.createElementNS(NS, tag); for (var k in at) e.setAttribute(k, at[k]); if (parent) parent.appendChild(e); return e; }
+    function call(f, a) { if (typeof f === 'function') try { f(a); } catch (e) { setTimeout(function () { throw e; }); } }
+
+    /* --- サイコロ --- */
+    var PIPS = { 1: [[50, 50]], 2: [[27, 27], [73, 73]], 3: [[27, 27], [50, 50], [73, 73]], 4: [[27, 27], [73, 27], [27, 73], [73, 73]],
+      5: [[27, 27], [73, 27], [50, 50], [27, 73], [73, 73]], 6: [[27, 25], [73, 25], [27, 50], [73, 50], [27, 75], [73, 75]] };
+    function dieDefs() {
+      if (document.getElementById('k-die-defs')) return;
+      var s = svg('svg', { id: 'k-die-defs', width: 0, height: 0, 'aria-hidden': 'true', style: 'position:absolute;width:0;height:0;overflow:hidden' });
+      s.innerHTML = '<defs><linearGradient id="k-die-face" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f6ecda"/></linearGradient>'
+        + '<radialGradient id="k-die-pip" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#3a322c"/><stop offset=".7" stop-color="#1f1a17"/><stop offset="1" stop-color="#0d0b0a"/></radialGradient>'
+        + '<radialGradient id="k-die-pip-shu" cx=".4" cy=".35" r=".75"><stop offset="0" stop-color="#e0583c"/><stop offset=".7" stop-color="#c93b23"/><stop offset="1" stop-color="#9e2c18"/></radialGradient></defs>';
+      (document.body || document.documentElement).appendChild(s);
+    }
+    function drawDie(el, n) {
+      n = Math.max(1, Math.min(6, n | 0 || 1));
+      var shu = el.classList.contains('k-die-shu'), one = !el.classList.contains('k-die-plain');
+      var s = el.querySelector('svg') || svg('svg', { viewBox: '0 0 100 100', 'aria-hidden': 'true', focusable: 'false' }, el);
+      while (s.firstChild) s.removeChild(s.firstChild);
+      svg('rect', { x: 4, y: 8, width: 92, height: 88, rx: 18, fill: '#e3d3b6', stroke: '#1f1a17', 'stroke-width': 3 }, s);     // 下の厚み
+      svg('rect', { x: 4, y: 4, width: 92, height: 88, rx: 18, fill: 'url(#k-die-face)', stroke: '#1f1a17', 'stroke-width': 3 }, s);
+      svg('path', { d: 'M20 11 H80', stroke: '#fff', 'stroke-width': 3, 'stroke-linecap': 'round', opacity: '.9' }, s);           // 上の光
+      var red = shu || (one && n === 1), r = n === 1 ? (one ? 15 : 11) : 9.5;
+      PIPS[n].forEach(function (p) {
+        var cy = 4 + p[1] * 0.88;   // 面（高さ88）の中に置く
+        svg('circle', { cx: p[0], cy: cy, r: r, fill: red ? 'url(#k-die-pip-shu)' : 'url(#k-die-pip)' }, s);
+        svg('path', { d: 'M' + (p[0] - r * 0.55) + ' ' + (cy + r * 0.62) + ' A' + r * 0.85 + ' ' + r * 0.85 + ' 0 0 0 ' + (p[0] + r * 0.62) + ' ' + (cy - r * 0.5), fill: 'none', stroke: '#fff', 'stroke-width': Math.max(1.2, r * 0.16), opacity: '.35', 'stroke-linecap': 'round' }, s);
+      });
+      el.setAttribute('data-face', n);
+      if (!el.hasAttribute('role')) el.setAttribute('role', 'img');
+      el.setAttribute('aria-label', 'サイコロ ' + n);
+    }
+    K.die = function (el, n, o) {
+      el = $el(el); o = o || {}; if (!el) return;
+      dieDefs();
+      if (el._kDieT) { clearInterval(el._kDieT); el._kDieT = 0; }
+      if (!o.roll || reduce) { drawDie(el, n); el.classList.remove('k-die-roll'); call(o.onDone, n); return; }
+      var ms = o.ms || 620, t0 = Date.now(), last = 0;
+      el.style.setProperty('--k-die-ms', ms + 'ms');
+      el.classList.remove('k-die-roll'); void el.offsetWidth; el.classList.add('k-die-roll');
+      drawDie(el, 1 + Math.floor(Math.random() * 6));
+      el._kDieT = setInterval(function () {
+        if (Date.now() - t0 >= ms * 0.72) { clearInterval(el._kDieT); el._kDieT = 0; drawDie(el, n); return; }
+        var f; do { f = 1 + Math.floor(Math.random() * 6); } while (f === last); last = f; drawDie(el, f);
+      }, 85);
+      setTimeout(function () { el.classList.remove('k-die-roll'); call(o.onDone, n); }, ms + 20);
+    };
+    K.die.draw = function (el, n) { el = $el(el); if (el) { dieDefs(); drawDie(el, n); } };
+
+    /* --- ルーレット盤 --- */
+    // 濃淡: 朱（白字）・生成り（墨字）・オレンジ（墨字）・薄いオレンジ（墨字）。隣どうし・最後と最初が同じにならないように
+    var WCOL = [['#c93b23', '#fff'], ['#fbf3e4', '#1f1a17'], ['#ff8a3d', '#1f1a17'], ['#f9d9b6', '#1f1a17']];
+    function wheelColors(n, pal) {
+      var out = [], i; for (i = 0; i < n; i++) out.push(pal[i % pal.length]);
+      if (n > 1 && out[n - 1] === out[0]) out[n - 1] = pal[(n - 1) % pal.length === 0 ? 2 % pal.length : 1];
+      if (n > 2 && out[n - 1] === out[n - 2]) out[n - 1] = pal[3 % pal.length];
+      return out;
+    }
+    K.wheel = function (el, o) {
+      el = $el(el); o = o || {};
+      var W = { items: [], angle: 0, el: el }, R = 94, HUB = 27;   // HUB＝中央の家紋（ふちまで）の半径（盤の 200 単位で）
+      el.classList.add('k-wheel'); el.innerHTML = '';
+      var disc = document.createElement('div'); disc.className = 'k-wheel-disc'; el.appendChild(disc);
+      var s = svg('svg', { viewBox: '-100 -100 200 200', 'aria-hidden': 'true', focusable: 'false' }, disc);
+      var gSeg = svg('g', {}, s), gTxt = svg('g', {}, s);
+      svg('circle', { r: R, fill: 'none', stroke: '#1f1a17', 'stroke-width': 4 }, s);
+      var hub = document.createElement('div'); hub.className = 'k-wheel-hub'; el.appendChild(hub);
+      var pin = document.createElement('div'); pin.className = 'k-wheel-pin'; el.appendChild(pin);
+      var ps = svg('svg', { viewBox: '0 0 40 52', 'aria-hidden': 'true' }, pin);
+      svg('path', { d: 'M20 50 L5 16 A16 16 0 1 1 35 16 Z', fill: '#1f1a17', stroke: '#fffdf8', 'stroke-width': 2.5, 'stroke-linejoin': 'round' }, ps);
+      svg('circle', { cx: 20, cy: 15, r: 5.5, fill: '#c93b23' }, ps);
+      var texts = [];
+      function pt(a, r) { var t = a * Math.PI / 180; return [r * Math.sin(t), -r * Math.cos(t)]; }
+      function scale() { var w = el.clientWidth || 300; return w / 200; }
+      function layoutText() {
+        var n = W.items.length, sc = scale(), min = (o.minPx || 14) / sc, step = 360 / Math.max(n, 1);
+        texts.forEach(function (t, i) {
+          var mid = (i + 0.5) * step, flip = Math.sin((mid + W.angle) * Math.PI / 180) < -0.02;
+          var label = String(W.items[i]), len = Math.max(1, label.length);
+          // 字の幅は1字＝1em とみなす。字の列の内側の端でも、隣のマスにはみ出さない大きさにする
+          var half = Math.min(Math.PI / 2, step * Math.PI / 360);
+          var fits = function (px, chars, rows) { var inner = R * 0.88 - px * chars; return inner >= HUB + 3 && 2 * inner * Math.sin(half) * 0.9 >= px * (rows * 1.12); };
+          var best = function (chars, rows, top) { for (var p2 = top; p2 >= 6; p2 -= 0.5) if (fits(p2, chars, rows)) return p2; return 0; };
+          var lines = [label], px = best(len, 1, 17);
+          if (px < 15 / sc && len >= 4) {
+            var h = Math.ceil(len / 2);
+            while (h > 1 && /^[ーッャュョァィゥェォっゃゅょぁぃぅぇぉ、。）」]/.test(label.charAt(h))) h--;   // 2行目の頭に「ー」や小さい字を置かない
+            var px2 = best(Math.max(h, len - h), 2, 16);
+            if (px2 > px) { lines = [label.slice(0, h), label.slice(h)]; px = px2; }
+          }
+          if (px < min) {   // 入らない: 1行で末尾を省く
+            px = min; var keep = 1; while (keep < len && fits(px, keep + 2, 1)) keep++;
+            lines = [label.length > keep ? label.slice(0, keep) + '…' : label];
+          }
+          while (t.firstChild) t.removeChild(t.firstChild);
+          // 左半分は180度回して、外側から中心へ読む向きに（逆さまにしない）
+          var x = flip ? -(R * 0.88) : R * 0.88, lh = px * 1.12, y0 = -(lines.length - 1) * lh / 2;
+          t.setAttribute('transform', 'rotate(' + (mid - 90 + (flip ? 180 : 0)) + ')');
+          t.setAttribute('text-anchor', flip ? 'start' : 'end');
+          lines.forEach(function (ln, k) {
+            var tx = svg('text', { x: x.toFixed(2), y: (y0 + k * lh).toFixed(2), 'font-size': px.toFixed(2), 'dominant-baseline': 'central' }, t);
+            tx.textContent = ln;
+          });
+        });
+      }
+      W.set = function (items) {
+        W.items = (items || []).slice(); var n = W.items.length, step = 360 / Math.max(n, 1);
+        var cols = wheelColors(n, o.colors || WCOL);
+        while (gSeg.firstChild) gSeg.removeChild(gSeg.firstChild);
+        while (gTxt.firstChild) gTxt.removeChild(gTxt.firstChild);
+        texts = [];
+        if (!n) { svg('circle', { r: R, fill: '#fbf3e4' }, gSeg); return W; }
+        for (var i = 0; i < n; i++) {
+          var a0 = i * step, a1 = (i + 1) * step, p0 = pt(a0, R), p1 = pt(a1, R);
+          var d = n === 1 ? 'M0 -' + R + ' A' + R + ' ' + R + ' 0 1 1 0 ' + R + ' A' + R + ' ' + R + ' 0 1 1 0 -' + R + ' Z'
+            : 'M0 0 L' + p0[0].toFixed(2) + ' ' + p0[1].toFixed(2) + ' A' + R + ' ' + R + ' 0 ' + (step > 180 ? 1 : 0) + ' 1 ' + p1[0].toFixed(2) + ' ' + p1[1].toFixed(2) + ' Z';
+          svg('path', { d: d, fill: cols[i][0], stroke: '#1f1a17', 'stroke-width': 2, 'stroke-linejoin': 'round' }, gSeg);
+          texts.push(svg('g', { fill: cols[i][1], class: 'k-wheel-t' }, gTxt));
+        }
+        layoutText();
+        return W;
+      };
+      // 角度 a（盤の回転・度）のとき針の下にある番号
+      W.at = function (a) { var n = W.items.length; if (!n) return -1; var pos = ((360 - (a % 360)) % 360 + 360) % 360; return Math.min(n - 1, Math.floor(pos / (360 / n))); };
+      W.spinTo = function (idx, so) {
+        so = so || {}; var n = W.items.length; if (!n) return;
+        var step = 360 / n, jitter = (Math.random() - 0.5) * step * 0.6;
+        var target = 360 - (idx + 0.5) * step + jitter, cur = W.angle % 360;
+        var delta = ((target - cur) % 360 + 360) % 360 + 360 * (so.turns == null ? 5 : so.turns);
+        var ms = reduce ? 0 : (so.ms || 3200);
+        W.angle += delta;
+        disc.style.transition = ms ? 'transform ' + ms + 'ms cubic-bezier(.12,.72,.14,1)' : 'none';
+        disc.style.transform = 'rotate(' + W.angle + 'deg)';
+        setTimeout(function () { layoutText(); call(so.onDone, idx); }, ms + 30);
+      };
+      if (typeof ResizeObserver === 'function') new ResizeObserver(function () { if (W.items.length) layoutText(); }).observe(el);
+      W.set(o.items || []);
+      return W;
+    };
+
+    /* --- ゲートの絵（canvas 用） --- */
+    K.gateArt = function (base) {
+      base = base == null ? 'kit/img/' : base;
+      var A = { ready: false, noren: null, post: null, cache: {} };
+      var n = 0, done = function () { if (++n === 2) A.ready = !!(A.noren && A.post); };
+      function load(k, f) { var im = new Image(); im.onload = function () { A[k] = im; done(); }; im.onerror = done; im.src = base + f; }
+      load('noren', 'k-gate-noren.webp'); load('post', 'k-gate-post.webp');
+      // のれんの白い布だけを色で染める（輪郭・竿の茶はそのまま）。白→その色・布の影→少し濃い色。色ごとに1回だけ作る
+      A.tint = function (col) {
+        if (!A.noren) return null; if (A.cache[col]) return A.cache[col];
+        var im = A.noren, c = document.createElement('canvas'); c.width = im.naturalWidth; c.height = im.naturalHeight;
+        var x = c.getContext('2d'); x.drawImage(im, 0, 0);
+        var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(col);
+        if (!m) return im;
+        var cr = parseInt(m[1], 16), cg = parseInt(m[2], 16), cb = parseInt(m[3], 16);
+        try {
+          var d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+          for (var i = 0; i < p.length; i += 4) {
+            var r = p[i], g = p[i + 1], b = p[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+            if (mx < 150 || mx - mn > 28) continue;          // 色のある所（竿）・暗い所（輪郭）は染めない
+            var l = mx / 255, t = Math.min(1, (mx - 150) / 60);  // 明るさを残して染める（影は濃い色）
+            p[i] = r + (cr * l - r) * t; p[i + 1] = g + (cg * l - g) * t; p[i + 2] = b + (cb * l - b) * t;
+          }
+          x.putImageData(d, 0, 0);
+        } catch (e) { return im; }
+        return (A.cache[col] = c);
+      };
+      return A;
+    };
   }
 })();
