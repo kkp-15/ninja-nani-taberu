@@ -335,7 +335,7 @@ function showResult(m){
   var box = $("result");
   // 挿し絵（2026-09-25・Codex制作・シリーズ共通の2人）。ふたの中は見せないので、どの料理が出ても食い違わない
   box.innerHTML = '<p>今日のごはんは</p><h3 class="k-reveal-fuda" id="mealName">'+m.name+'</h3><span>'+m.note+'</span>'
-    + '<img class="result-pic" src="/img/meal-decided.webp" width="336" height="270" alt="" decoding="async">'
+    + '<img class="result-pic" src="/img/shiba-meal.webp" width="336" height="366" alt="柴犬の忍者" loading="lazy" decoding="async">'
     + '<div class="result-actions"><button type="button" id="again">もう一度まわす</button>'
     + '<a href="https://www.google.com/search?q='+encodeURIComponent(m.name+" 近く")+'" target="_blank" rel="noopener noreferrer">近くのお店を探す</a></div>';
   box.classList.add("visible");
